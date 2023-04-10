@@ -1,6 +1,6 @@
-#LDAPenum
+# LDAPenum
 
-LDAPEnum es una herramienta de línea de comandos diseñada para simplificar la enumeración de servicios LDAP mediante la utilización de ldapsearch. Esta herramienta es especialmente útil para aquellos que necesitan realizar la enumeración de servicios LDAP de manera eficiente y rápida, sin tener que preocuparse por la configuración de parámetros complicados o la interpretación de resultados confusos.
+**LDAPenum** es una herramienta de línea de comandos diseñada para simplificar la enumeración de servicios **LDAP** mediante la utilización de **ldapsearch**. Esta herramienta es especialmente útil para aquellos que necesitan realizar la enumeración de servicios LDAP de manera eficiente y rápida, sin tener que preocuparse por la configuración de parámetros complicados o la interpretación de resultados confusos.
 
 Esta herramienta nos permitirá obtener la siguiente información de un servicio LDAP:
 
