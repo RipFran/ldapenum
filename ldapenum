@@ -1,0 +1,523 @@
+#!/bin/bash
+
+# Author: Francisco Carot Ripollés (aka R1pFr4n)
+
+#Colours
+greenColour="\e[0;32m\033[1m"
+endColour="\033[0m\e[0m"
+redColour="\e[0;31m\033[1m"
+blueColour="\e[0;34m\033[1m"
+yellowColour="\e[0;33m\033[1m"
+purpleColour="\e[0;35m\033[1m"
+turquoiseColour="\e[0;36m\033[1m"
+grayColour="\e[0;37m\033[1m"
+
+declare -r tmp_file="/dev/shm/tmp_file"
+declare -r tmp_file2="/dev/shm/tmp_file2"
+declare -r tmp_file3="/dev/shm/tmp_file3"
+
+function ctrl_c(){
+
+	echo -e "\n${yellowColour}[*]${endColour}${grayColour} Exiting...${endColour}"; sleep 1
+	rm $tmp_file 2>/dev/null
+	tput cnorm; exit 1
+}
+trap ctrl_c INT
+
+function helpPanel(){
+
+	echo -e "\n${yellowColour}[*]${endColour}${grayColour} Usage: ldapenum${endColour}"
+	echo -e "\n\t${purpleColour}e)${endColour}${yellowColour} Enumeration Mode${endColour}"
+	echo -e "\n\t\t${grayColour}DUsers${endColour}${redColour} (Domain Users)${endColour}"
+    echo -e "\t\t${grayColour}DUsersInfo${endColour}${redColour} (Domain Users with Info)${endColour}"
+    echo -e "\t\t${grayColour}DAUsers${endColour}${redColour} (Domain Admin Users)${endColour}"
+    echo -e "\t\t${grayColour}DGroups ${redColour}(Domain Groups)${endColour}"
+    echo -e "\t\t${grayColour}DComputers ${redColour}(Domain Computers)${endColour}"
+    echo -e "\t\t${grayColour}DAObjects ${redColour}(Domain objects with elevated permissions)${endColour}"
+    echo -e "\t\t${grayColour}DSid ${redColour}(Domain SID)${endColour}"
+	echo -e "\t\t${grayColour}All ${redColour}(All Modes)${endColour}"
+	echo -e "\n\t${purpleColour}i)${endColour}${yellowColour} Host IP Address${endColour}"
+	echo -e "\n\t${purpleColour}N)${endColour}${yellowColour} Use guest session (no authentication)${endColour}"
+	echo -e "\n\t${purpleColour}u)${endColour}${yellowColour} Username${endColour}"
+	echo -e "\n\t${purpleColour}p)${endColour}${yellowColour} Password${endColour}"
+    echo -e "\n\t${purpleColour}d)${endColour}${yellowColour} Domain${endColour}"
+	echo -e "\n\t${purpleColour}h)${endColour}${yellowColour} Show this help pannel${endColour}"
+	exit
+}
+
+function printTable(){
+
+    local -r delimiter="${1}"
+    local -r data="$(removeEmptyLines "${2}")"
+
+    if [[ "${delimiter}" != '' && "$(isEmptyString "${data}")" = 'false' ]]
+    then
+        local -r numberOfLines="$(wc -l <<< "${data}")"
+
+        if [[ "${numberOfLines}" -gt '0' ]]
+        then
+            local table=''
+            local i=1
+
+            for ((i = 1; i <= "${numberOfLines}"; i = i + 1))
+            do
+                local line=''
+                line="$(sed "${i}q;d" <<< "${data}")"
+
+                local numberOfColumns='0'
+                numberOfColumns="$(awk -F "${delimiter}" '{print NF}' <<< "${line}")"
+
+                if [[ "${i}" -eq '1' ]]
+                then
+                    table="${table}$(printf '%s#+' "$(repeatString '#+' "${numberOfColumns}")")"
+                fi
+
+                table="${table}\n"
+
+                local j=1
+
+                for ((j = 1; j <= "${numberOfColumns}"; j = j + 1))
+                do
+                    table="${table}$(printf '#| %s' "$(cut -d "${delimiter}" -f "${j}" <<< "${line}")")"
+                done
+
+                table="${table}#|\n"
+
+                if [[ "${i}" -eq '1' ]] || [[ "${numberOfLines}" -gt '1' && "${i}" -eq "${numberOfLines}" ]]
+                then
+                    table="${table}$(printf '%s#+' "$(repeatString '#+' "${numberOfColumns}")")"
+                fi
+            done
+
+            if [[ "$(isEmptyString "${table}")" = 'false' ]]
+            then
+                echo -e "${table}" | column -s '#' -t | awk '/^\+/{gsub(" ", "-", $0)}1'
+            fi
+        fi
+    fi
+}
+
+function removeEmptyLines(){
+
+    local -r content="${1}"
+    echo -e "${content}" | sed '/^\s*$/d'
+}
+
+function repeatString(){
+
+    local -r string="${1}"
+    local -r numberToRepeat="${2}"
+
+    if [[ "${string}" != '' && "${numberToRepeat}" =~ ^[1-9][0-9]*$ ]]
+    then
+        local -r result="$(printf "%${numberToRepeat}s")"
+        echo -e "${result// /${string}}"
+    fi
+}
+
+function isEmptyString(){
+
+    local -r string="${1}"
+
+    if [[ "$(trimString "${string}")" = '' ]]
+    then
+        echo 'true' && return 0
+    fi
+
+    echo 'false' && return 1
+}
+
+function trimString(){
+
+    local -r string="${1}"
+    sed 's,^[[:blank:]]*,,' <<< "${string}" | sed 's,[[:blank:]]*$,,'
+}
+
+function progress_bar() {
+    current=$1
+    total=$2
+    width=${3:-50}
+    bar_width=$((current * width / total))
+
+    printf "Progress: ["
+    for ((i=0; i<bar_width; i++)); do
+        printf "#"
+    done
+    for ((i=bar_width; i<width; i++)); do
+        printf " "
+    done
+    printf "] %d%%\r" $((current * 100 / total))
+}
+
+function extract_DUsers(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain Users...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    readarray -t domain_users < <($1 -b "DC=${firstDC},DC=${secondDC}" "(objectClass=user)" | grep sAMAccountName | awk '{print $2}' FS=':' | sort -u | grep -v '\$' | sed 's/^ //')
+
+    echo "Users" > $tmp_file
+    total_users=${#domain_users[@]}
+    for index in "${!domain_users[@]}"; do
+        user="${domain_users[index]}"
+        echo $user >> $tmp_file
+
+        progress_bar $((index + 1)) $total_users 50
+    done
+    echo -e "\n" 
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+}
+
+
+function extract_DUsers_Info(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain Users With Info...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    readarray -t domain_users < <($1 -b "DC=${firstDC},DC=${secondDC}" "(objectClass=user)" | grep sAMAccountName | awk '{print $2}' FS=':' | sort -u | grep -v '\$' | sed 's/^ //')
+
+    echo "User,Name,Surname,Country,Locality,State, Postal Code, Street Address, Mail" > $tmp_file
+    total_users=${#domain_users[@]}
+
+    other_fields_output=""
+
+    for index in "${!domain_users[@]}"; do
+        user="${domain_users[index]}"
+        user_info=$($1 -b "DC=${firstDC},DC=${secondDC}" "(&(objectClass=user)(sAMAccountName=${user}))")
+
+        name=$(echo "$user_info" | grep "^givenName:" | awk '{print $2}' FS=':')
+        surname=$(echo "$user_info" | grep "^sn:" | awk '{print $2}' FS=':')
+        country=$(echo "$user_info" | grep "^c:" | awk '{print $2}' FS=':')
+        locality=$(echo "$user_info" | grep "^l:" | awk '{print $2}' FS=':')
+        state=$(echo "$user_info" | grep "^st:" | awk '{print $2}' FS=':')
+        postalCode=$(echo "$user_info" | grep "^postalCode" | awk '{print $2}' FS=':')
+        streetAddress=$(echo "$user_info" | grep "^streetAddress:" | awk '{print $2}' FS=':')
+        mail=$(echo "$user_info" | grep "^mail:" | awk '{print $2}' FS=':')
+
+        other_fields=$(echo "$user_info" | grep ':' | grep -vE "^dn|^objectClass|^cn|^#|^sAMAccountName|^givenName|^sn|^c|^l|^st|^postalCode|^streetAddress|^mail|^memberOf|^whenCreated|^uSNCreated|^name|^badPwdCount|^dSCorePropagationData|^whenChanged|^uSNChanged|^badPasswordTime|^primaryGroupID|^ref|^search|^objectCategory|^sAMAccountType|^accountExpires|^objectSid|^pwdLastSet|^userAccountControl|^objectGUID|^instanceType|^distinguishedName|^description|^result|^isCriticalSystemObject|^isCriticalSystemObject|^servicePrincipalName|^isCriticalSystemObject|^adminCount|^showInAdvancedViewOnly|^msDS-SupportedEncryptionTypes|^userPrincipalName")
+        
+        echo "$user,$name,$surname,$country,$locality,$state,$postalCode,$streetAddress,$mail" >> $tmp_file
+
+        if [[ ! -z "$other_fields" ]]; then
+            other_fields_output+="\n\t${greenColour}${user}${endColour} Other Fields: \n\n"
+
+            while read -r line; do
+                other_fields_output+="\t\t${line}\n"
+            done <<< "$other_fields"
+
+            other_fields_output+="\n"
+        fi
+
+        progress_bar $((index + 1)) $total_users 50
+    done
+    echo -e "\n"
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+
+    echo ""
+    if [[ ! -z "$other_fields_output" ]]; then
+        echo -e "${yellowColour}[*] Other interesting fields:${endColour}\n${other_fields_output}"
+    fi
+}
+
+
+function extract_DComputers(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain Computers...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    readarray -t computers < <($1 -b "DC=${firstDC},DC=${secondDC}" "(objectClass=computer)" | grep sAMAccountName | awk '{print $2}' FS=':' | sort -u | sed 's/^ //')
+
+    echo "Computer Name,Operating System,OS Version,DNS Hostname,Description" > $tmp_file
+    total_computers=${#computers[@]}
+    for index in "${!computers[@]}"; do
+        computer="${computers[index]}"
+
+        computer_info=$($1 -b "DC=${firstDC},DC=${secondDC}" "(&(objectClass=computer)(sAMAccountName=${computer}))" sAMAccountName operatingSystem operatingSystemVersion dNSHostName description)
+
+        os=$(echo "$computer_info" | grep "operatingSystem:" | awk '{print $2}' FS=':')
+        os_version=$(echo "$computer_info" | grep "operatingSystemVersion:" | awk '{print $2}' FS=':')
+        dnsHostname=$(echo "$computer_info" | grep "dNSHostName:" | awk '{print $2}' FS=':')
+        description=$(echo "$computer_info" | grep "description:" | awk '{print $2}' FS=':')
+
+        echo "$computer,$os,$os_version,$dnsHostname,$description" >> $tmp_file
+
+        progress_bar $((index + 1)) $total_computers 50
+    done
+    echo -e "\n"
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+}
+
+
+function get_group_type_description() {
+    local group_type=$1
+
+    if ((group_type & 0x00000002)); then
+        echo "Global"
+    elif ((group_type & 0x00000004)); then
+        echo "Domain Local"
+    elif ((group_type & 0x00000008)); then
+        echo "Universal"
+    fi
+}
+
+function extract_DAUsers(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain Admins...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    readarray -t domain_admins < <($1 -b "DC=${firstDC},DC=${secondDC}" "(&(objectClass=user)(|(memberOf:1.2.840.113556.1.4.1941:=CN=Domain Admins,CN=Users,DC=${firstDC},DC=${secondDC})(memberOf:1.2.840.113556.1.4.1941:=CN=Enterprise Admins,CN=Users,DC=${firstDC},DC=${secondDC})(memberOf:1.2.840.113556.1.4.1941:=CN=Schema Admins,CN=Users,DC=${firstDC},DC=${secondDC})))" | grep sAMAccountName | awk '{print $2}' FS=':' | sort -u | sed 's/^ //')
+
+    echo "Domain Admins" > $tmp_file
+    total_admins=${#domain_admins[@]}
+    for index in "${!domain_admins[@]}"; do
+        admin="${domain_admins[index]}"
+        echo $admin >> $tmp_file
+
+        progress_bar $((index + 1)) $total_admins 50
+    done
+    echo -e "\n" 
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+}
+
+function extract_DGroups(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain and Local Groups...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    readarray -t domain_groups < <($1 -b "DC=${firstDC},DC=${secondDC}" "(objectClass=group)" | awk -F':' '/^sAMAccountName/{gsub(/^ +| +$/,"",$2); print $2}' | sort -u)
+
+    echo "Groups,Group Type,Description" > $tmp_file
+    total_groups=${#domain_groups[@]}
+    for index in "${!domain_groups[@]}"; do
+        group="${domain_groups[index]}"
+
+        group_info=$($1 -b "DC=${firstDC},DC=${secondDC}" "(&(objectClass=group)(sAMAccountName=${group}))")
+        group_type=$(echo "$group_info" | grep "groupType:" | awk '{print $2}' FS=':')
+        group_type_description=$(get_group_type_description $group_type)
+        description=$(echo "$group_info" | grep "description:" | awk -F ':' '{print $2}' | sed 's/,/ /g' | awk '{ if (NF > 8) {for (i=1; i<=8; i++) printf "%s%s", $i, (i < 8 ? " " : "...") } else { $1=$1; print } }')
+
+        echo "$group,$group_type_description,$description" >> $tmp_file
+
+        progress_bar $((index + 1)) $total_groups 50
+    done
+    echo -e "\n"
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+}
+
+function extract_DAObjects(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain Admins Objects...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    readarray -t da_objects < <($1 -b "DC=${firstDC},DC=${secondDC}" "(&(objectCategory=*)(adminCount=1))" | awk -F':' '/^sAMAccountName/{gsub(/^ +| +$/,"",$2); print $2}' | sort -u)
+
+    echo "Domain Admins Objects" > $tmp_file
+    total_objects=${#da_objects[@]}
+    for index in "${!da_objects[@]}"; do
+        da_object="${da_objects[index]}"
+        echo $da_object >> $tmp_file
+
+        progress_bar $((index + 1)) $total_objects 50
+    done
+    echo -e "\n"
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+}
+
+function extract_DSid(){
+
+    echo -e "\n${yellowColour}[*]${endColour}${grayColour} Enumerating Domain SID...${endColour}\n"
+
+    firstDC=$(echo ${domain} | awk '{print $1}' FS='.')
+    secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+
+    sid_base64=$($1 -b "DC=${firstDC},DC=${secondDC}" "(objectClass=domain)" | grep objectSid  | awk '{print $2}')
+    sid_hex_decoded=$(echo -n $sid_base64 | base64 -d | xxd -p)
+
+    revision=$(echo ${sid_hex_decoded:0:2})
+    sub_auth_count=$(echo ${sid_hex_decoded:2:2})
+    id_auth=$(echo ${sid_hex_decoded:4:12} | sed 's/^0*//')
+
+    sub_authorities=()
+    for ((i=0; i<${sub_auth_count}; i++)); do
+        start=$((16 + i * 8))
+        sub_auth=$(echo ${sid_hex_decoded:start:8} | awk '{for(i=length;i!=0;i-=2)x=x substr($0,i-1,2);print x}{x=""}')
+        sub_authorities+=("$(printf '%u' 0x${sub_auth})")
+    done
+
+    IFS='-'; sid="S-$(printf '%u' 0x${revision})-$(printf '%u' 0x${id_auth})-${sub_authorities[*]}"; unset IFS
+
+    echo "Domain SID" > $tmp_file
+    echo $sid >> $tmp_file
+
+    echo -ne "${blueColour}"; printTable ',' "$(cat $tmp_file)"; echo -ne "${endColour}"
+    rm $tmp_file 2>/dev/null
+}
+
+function extract_All(){
+
+        extract_DUsers "${ldapsearch_cmd}"
+        extract_DUsers_Info "${ldapsearch_cmd}"
+        extract_DAUsers "${ldapsearch_cmd}"
+        extract_DGroups "${ldapsearch_cmd}"
+        extract_DComputers "${ldapsearch_cmd}"
+        extract_DAObjects "${ldapsearch_cmd}"
+        extract_DSid "${ldapsearch_cmd}"
+}
+
+function beginEnumeration() {
+
+    tput civis 
+    trap ctrl_c INT
+    nmap_output=$(nmap -p 389,636,3268,3269 ${host_ip} -Pn | grep 'open')
+    
+    if [[ -n "${nmap_output}" ]]; then
+        firstDC=$(echo ${domain} | awk '{print $1}' FS='.') 
+        secondDC=$(echo ${domain} | awk '{print $2}' FS='.')
+        if [[ "${guest_session}" == "true" ]]; then
+            ldapsearch_cmd="ldapsearch -x -H ldap://${host_ip} -D "" -w """
+        else
+            ldapsearch_cmd="ldapsearch -x -H ldap://${host_ip} -D ${firstDC}\\${username} -w ${password}"
+        fi
+
+        ldapsearch_output=$($ldapsearch_cmd 2>&1)
+    
+        if ! echo "${ldapsearch_output}" | grep -qE "Invalid credentials|Operations error"; then
+            case "${enum_mode}" in
+                DUsers)
+                    extract_DUsers "${ldapsearch_cmd}"
+                    ;;
+                DUsersInfo)
+                    extract_DUsers_Info "${ldapsearch_cmd}"
+                    ;;
+                DAUsers)
+                    extract_DAUsers "${ldapsearch_cmd}"
+                    ;;
+                DGroups)
+                    extract_DGroups "${ldapsearch_cmd}"
+                    ;;
+                DComputers)
+                    extract_DComputers "${ldapsearch_cmd}"
+                    ;;
+                DAObjects)
+                    extract_DAObjects "${ldapsearch_cmd}"
+                    ;;
+                DSid)
+                    extract_DSid "${ldapsearch_cmd}"
+                    ;;
+                All)
+					extract_All "${ldapsearch_cmd}"
+                    ;;
+                *)
+                    echo -e "\n${redColour}[!] Invalid Option: ${enum_mode}${endColour}\n"
+                    helpPanel
+                    exit 1
+                    ;;
+            esac
+        else
+            echo -e "\n${redColour}[!] Error: Access denied${endColour}\n"
+            tput cnorm
+            exit 0
+        fi
+    else
+        echo -e "\n${redColour}[!] The LDAP service seems to be closed in ${host_ip}${endColour}\n"
+        tput cnorm
+        exit 0
+    fi
+
+    tput cnorm
+}
+
+# Main
+guest_session=false
+
+while getopts ":e:i:u:p:d:Nh" opt; do
+    case ${opt} in
+        e)
+            enum_mode="${OPTARG}"
+            ;;
+        i)
+            host_ip="${OPTARG}"
+            ;;
+        u)
+            username="${OPTARG}"
+            ;;
+        p)
+            password="${OPTARG}"
+            ;;
+        d)
+            domain="${OPTARG}"
+            ;;
+        N)
+            guest_session=true
+            ;;
+        h)
+            helpPanel
+            ;;
+        \?)
+            echo -e "\n${redColour}[!] Invalid Option: -$OPTARG${endColour}\n"
+            helpPanel
+            exit 1
+            ;;
+        :)
+            echo -e "\n${redColour}[!] Option -$OPTARG requires an argument.${endColour}\n"
+            helpPanel
+            exit 1
+            ;;
+    esac
+done
+
+# Check if the host IP address was provided
+if [[ -z "${host_ip}" ]]; then
+    echo -e "\n${redColour}[!] It is necessary to provide the IP address of the host to be listed. (e.g. -i 8.8.8.8).${endColour}\n"
+    helpPanel
+    exit 1
+fi
+
+# Check if enumeration mode was provided
+if [[ -z "${enum_mode}" ]]; then
+    echo -e "\n${redColour}[!] It is necessary to provide the enumeration mode (e.g. -e DUsers).${endColour}\n"
+    helpPanel
+    exit 1
+fi
+
+# Check if the domain was provided
+if [[ -z "${domain}" ]]; then
+    echo -e "\n${redColour}[!] It is necessary to provide the domain (e.g. -d contoso.local).${endColour}\n"
+    helpPanel
+    exit 1
+fi
+
+# Check whether a guest session or user credentials have been specified
+if [ "$guest_session" = false ] && [ -z "$username" -o -z "$password" ]; then
+    echo -e "\n${redColour}[!] You must specify a guest/anonymous session (-N) or provide a username and password (-u and -p).${endColour}\n"
+    helpPanel
+    exit 1
+fi
+
+# Begin enumeration
+beginEnumeration
+
